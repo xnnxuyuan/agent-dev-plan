@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 week0/agent_loop.py —— 从零手写的最小 Agent 循环（零框架，约 200 行）
-sk-7b5616352fc44e569b61403caa5acfdf
 它只做四件事：
   1. 把「系统提示 + 用户任务 + 历史」发给模型
   2. 模型说要用哪个工具，就执行哪个工具
@@ -137,6 +136,23 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep_repo",
+            "description": "在目录下递归搜索文本关键词，返回 文件:行号: 内容 列表，最多 50 条。"
+                           "适合按内容找函数定义、配置项、报错关键词等场景；"
+                           "当需要按内容搜索而不是按文件名查找时用它，不要用 run_shell 去执行 grep。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string", "description": "要搜索的关键词（不区分大小写）"},
+                    "path": {"type": "string", "description": "相对工作目录的目录路径，默认 '.'"},
+                },
+                "required": ["keyword"],
+            },
+        },
+    },
 ]
 
 
@@ -216,11 +232,46 @@ def tool_run_shell(command: str) -> str:
     return text or f"exit_code={proc.returncode}（无输出）"
 
 
+def tool_grep_repo(keyword: str, path: str = ".") -> str:
+    """递归搜索目录下的文本文件，返回 文件:行号: 内容，最多 50 条。"""
+    target = safe_path(path)
+    if not target.exists():
+        return f"错误：目录不存在：{path}。可以先用 list_dir('.') 看看有哪些目录。"
+    if not target.is_dir():
+        return f"错误：{path} 不是目录，是文件。grep_repo 只搜索目录。"
+
+    keyword_l = keyword.lower()
+    hits: list[str] = []
+    scanned = 0
+    for p in target.rglob("*"):
+        if not p.is_file():
+            continue
+        if p.stat().st_size > 1024 * 1024:  # 跳过超大文件，避免读爆内存
+            continue
+        scanned += 1
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        for i, line in enumerate(lines, start=1):
+            if keyword_l in line.lower():
+                hits.append(f"{p.relative_to(WORKDIR)}:{i}: {line.strip()[:200]}")
+                if len(hits) >= 50:
+                    break
+        if len(hits) >= 50:
+            break
+
+    if not hits:
+        return f"在 {path} 下共扫描 {scanned} 个文本文件，未找到包含「{keyword}」的行。"
+    return f"共找到 {len(hits)} 条（上限 50），扫描 {scanned} 个文本文件：\n" + "\n".join(hits)
+
+
 DISPATCH = {
     "list_dir": tool_list_dir,
     "read_file": tool_read_file,
     "write_file": tool_write_file,
     "run_shell": tool_run_shell,
+    "grep_repo": tool_grep_repo,
 }
 
 
